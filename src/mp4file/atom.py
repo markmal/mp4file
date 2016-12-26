@@ -2,10 +2,16 @@
 Created on Dec 6, 2009
 
 @author: napier
+
+
+Dec 26, 2016: Added population of mvhd, tkhd, mdhd atoms. Made compatible with Python3
+@author: Mark Malakanov
 '''
 import logging
 import os
 import struct
+import datetime
+import pytz
 
 from atomsearch import find_path, findall_path
 
@@ -17,19 +23,19 @@ class EndOFFile(Exception):
 
 def read32(file):
     data = file.read(4)
-    if (data is None or len(data) <> 4):
+    if (data is None or len(data) != 4):
         raise EndOFFile()
     return struct.unpack(">I", data)[0]
 
 def read16(file):
     data = file.read(2)
-    if (data is None or len(data) <> 2):
+    if (data is None or len(data) != 2):
         raise EndOFFile()
     return struct.unpack(">H", data)[0]
 
 def read8(file):
     data = file.read(1)
-    if (data is None or len(data) <> 1):
+    if (data is None or len(data) != 1):
         raise EndOFFile()
     return struct.unpack(">B", data)[0]
 
@@ -40,6 +46,19 @@ def type_to_str(data):
     d = (data >> 24) & 0xff
 
     return '%c%c%c%c' % (d, c, b, a)
+
+mp4time0 = datetime.datetime(1904,1,1,hour=0, minute=0, second=0, microsecond=0, tzinfo=pytz.utc)
+
+def mp4time_to_datetime(sec):
+    global mp4time0
+    return mp4time0 + datetime.timedelta(seconds=sec)
+
+# reorders bytes in 32 bit word ABCD to DCBA
+def flip32(val):
+    log.debug(val)
+    new = ((val & 0x000000FF)<<24)+((val & 0xFF000000)>>24)+((val & 0x0000FF00)<<8)+((val & 0x00FF0000)>>8)
+    log.debug(new)
+    return new
 
 def parse_atom(file):
     try:
@@ -83,6 +102,9 @@ ATOM_TYPE_MAP = { '\xa9too': 'encoder',
                   'tves': 'tvepisode',
                   'purd': 'purcahsedate',
                   'pgap': 'gapless',
+                  'mvhd': 'mvhd',
+                  'tkhd': 'tkhd',
+                  'mdhd': 'mdhd'
                   }
 
 # There are a lot of atom's with children.  No need to create
@@ -105,7 +127,7 @@ def create_atom(size, type, offset, file):
     clz = type
     # Possibly remap atom types that aren't valid
     # python variable names
-    if (ATOM_TYPE_MAP.has_key(type)):
+    if type in ATOM_TYPE_MAP:
         clz = ATOM_TYPE_MAP[type]
     if type in ATOM_WITH_CHILDREN:
         return AtomWithChildren(size, type, clz, offset, file)
@@ -196,10 +218,107 @@ class data(Atom):
             data = self.file.read(self.size - 16)
             self._set_attr("data", data)
         else:
-            print self.type
+            print(self.type)
 
     def parse_string(self):
         # consume extra null?
         read32(self.file)
         howMuch = self.size - 16
         return unicode(self.file.read(howMuch), "utf-8")
+
+class mvhd(Atom):
+    def __init__(self, size, type, name, offset, file):
+        Atom.__init__(self, size, type, name, offset, file)
+        log.debug('mvhd: size:%d, type:%s, name:%s, offset:%d'%(size, type, name, offset))
+        assert type == 'mvhd', "requested atom type is not 'mvhd' : %s"%type        
+        assert size == 108, "'mvhd' expected size must be 108, requested atom size is %d"%(size)        
+        file.seek(offset)
+        sz = read32(file)
+        assert sz == size, "'mvhd' expected size must be 108, actual atom size is %d"%(sz)        
+        tp = type_to_str(read32(file))
+        assert tp == 'mvhd', "atom type is not 'mvhd' : %s"%tp        
+        vf = read32(file)        
+        self._set_attr("version", vf & 0xFF000000)
+        self._set_attr("flags",   vf & 0x00FFFFFF)
+        self._set_attr("creation_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("modification_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("time_scale", (read32(file)))
+        self._set_attr("duration", (read32(file)))
+        ri = read16(file) # integer part of Preferred Rate
+        rf = read16(file) # fraction part of Preferred Rate
+        pr = float("%d.%d"%(ri,rf))
+        self._set_attr("preferred_rate", pr)
+        vi = read8(file) # integer part of Preferred Volume
+        vf = read8(file) # fraction part of Preferred Volume
+        pv = float("%d.%d"%(vi,vf))
+        self._set_attr("preferred_volume", pr)
+        reserved = read32(file)
+        reserved = read32(file)
+        reserved = read16(file)
+        matrix =  [ read32(file), read32(file), read32(file),
+                    read32(file), read32(file), read32(file),
+                    read32(file), read32(file), read32(file) ] 
+        self._set_attr("matrix", matrix)
+        predefines = [ read32(file), read32(file), read32(file),
+                       read32(file), read32(file), read32(file) ]
+        self._set_attr("next_track_id",read32(file))
+
+        log.debug(self.attrs)
+        
+class tkhd(Atom):
+    def __init__(self, size, type, name, offset, file):
+        Atom.__init__(self, size, type, name, offset, file)
+        log.debug('tkhd: size:%d, type:%s, name:%s, offset:%d'%(size, type, name, offset))
+        assert type == 'tkhd', "requested atom type is not 'tkhd' : %s"%type        
+        assert size == 92, "'tkhd' expected size must be 92, requested atom size is %d"%(size)        
+        file.seek(offset)
+        sz = read32(file)
+        assert sz == size, "'tkhd' expected size must be 92, actual atom size is %d"%(sz)        
+        tp = type_to_str(read32(file))
+        assert tp == 'tkhd', "atom type is not 'tkhd' : %s"%tp        
+        vf = read32(file)        
+        self._set_attr("version", vf & 0xFF000000)
+        self._set_attr("flags",   vf & 0x00FFFFFF)
+        self._set_attr("creation_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("modification_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("track_id",read32(file))
+        reserved = read32(file)
+        self._set_attr("duration", (read32(file)))
+        reserved = read32(file)
+        reserved = read32(file)
+        self._set_attr("layer",read16(file))
+        self._set_attr("alternate_group",read16(file))
+        self._set_attr("volume",read16(file))
+        reserved = read16(file)
+        matrix =  [ read32(file), read32(file), read32(file),
+                    read32(file), read32(file), read32(file),
+                    read32(file), read32(file), read32(file) ] 
+        self._set_attr("matrix", matrix)
+        self._set_attr("track_width", (read32(file)))
+        self._set_attr("track_height", (read32(file)))
+        log.debug(self.attrs)
+        
+class mdhd(Atom):
+    def __init__(self, size, type, name, offset, file):
+        Atom.__init__(self, size, type, name, offset, file)
+        log.debug('mdhd: size:%d, type:%s, name:%s, offset:%d'%(size, type, name, offset))
+        assert type == 'mdhd', "requested atom type is not 'mdhd' : %s"%type        
+        assert size == 32, "'mdhd' expected size must be 32, requested atom size is %d"%(size)        
+        file.seek(offset)
+        sz = read32(file)
+        assert sz == size, "'mdhd' expected size must be 92, actual atom size is %d"%(sz)        
+        tp = type_to_str(read32(file))
+        assert tp == 'mdhd', "atom type is not 'mdhd' : %s"%tp        
+        vf = read32(file)        
+        self._set_attr("version", vf & 0xFF000000)
+        self._set_attr("flags",   vf & 0x00FFFFFF)
+        self._set_attr("creation_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("modification_time", mp4time_to_datetime(read32(file)))
+        self._set_attr("time_scale", (read32(file)))
+        self._set_attr("duration", (read32(file)))
+        self._set_attr("language",read16(file))
+        self._set_attr("quality",read16(file))
+        log.debug(self.attrs)
+        
+        
+
